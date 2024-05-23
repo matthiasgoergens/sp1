@@ -91,6 +91,7 @@ impl<T> IntoIterator for TracedVec<T> {
 ///
 /// Can compile to both assembly and a set of constraints.
 #[derive(Debug, Clone, Default)]
+#[must_use]
 pub struct Builder<C: Config> {
     pub(crate) felt_count: u32,
     pub(crate) ext_count: u32,
