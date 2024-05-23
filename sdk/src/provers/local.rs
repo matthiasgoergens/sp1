@@ -7,13 +7,14 @@ use crate::{
     SP1ProvingKey, SP1VerifyingKey,
 };
 
-/// An implementation of [crate::ProverClient] that can generate end-to-end proofs locally.
+/// An implementation of [`crate::ProverClient`] that can generate end-to-end proofs locally.
 pub struct LocalProver {
     prover: SP1Prover,
 }
 
 impl LocalProver {
-    /// Creates a new [LocalProver].
+    /// Creates a new [`LocalProver`].
+    #[must_use]
     pub fn new() -> Self {
         let prover = SP1Prover::new();
         Self { prover }
