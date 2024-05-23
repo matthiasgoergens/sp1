@@ -705,7 +705,7 @@ mod tests {
     use super::*;
 
     use anyhow::Result;
-    use p3_field::PrimeField32;
+
     use serial_test::serial;
     use sp1_core::io::SP1Stdin;
     use sp1_core::utils::setup_logger;

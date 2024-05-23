@@ -465,7 +465,7 @@ pub(crate) mod tests {
 
         challenger_val.observe(vk.commit);
 
-        for proof in proofs.iter() {
+        for proof in &proofs {
             challenger_val.observe(proof.commitment.main_commit);
             challenger_val.observe_slice(&proof.public_values[0..machine.num_pv_elts()]);
         }
@@ -563,7 +563,7 @@ pub(crate) mod tests {
         let mut challenger = machine.config().challenger();
         let verification_result = machine.verify(&vk, &proof, &mut challenger);
         assert!(
-            !verification_result.is_err(),
+            verification_result.is_ok(),
             "Proof should verify successfully"
         );
 
@@ -572,9 +572,9 @@ pub(crate) mod tests {
             InnerVal::zero();
         let verification_result = machine.verify(&vk, &proof, &mut challenger);
         assert!(
-            !verification_result.is_ok(),
+            verification_result.is_err(),
             "Proof should not verify successfully"
-        )
+        );
     }
 
     #[test]
