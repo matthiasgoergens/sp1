@@ -55,6 +55,7 @@ impl Prover for LocalProver {
         })
     }
 
+    #[allow(unused_variables)]
     fn prove_groth16(&self, pk: &SP1ProvingKey, stdin: SP1Stdin) -> Result<SP1Groth16Proof> {
         cfg_if! {
             if #[cfg(feature = "groth16")] {
