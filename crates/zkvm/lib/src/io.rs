@@ -53,7 +53,7 @@ pub fn read_vec() -> Vec<u8> {
 
     // SAFETY:
     // 1. `ptr` was allocated using alloc
-    // 2. We assuume that the VM global allocator doesn't dealloc
+    // 2. We assume that the VM global allocator doesn't dealloc
     // 3/6. Size is correct from above
     // 4/5. Length is 0
     // 7. Layout::from_size_align already checks this
