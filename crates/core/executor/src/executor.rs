@@ -375,7 +375,6 @@ impl<'a> Executor<'a> {
             unconstrained_state: Box::new(ForkState::default()),
             syscall_map,
             executor_mode: ExecutorMode::Trace,
-
             emit_global_memory_events: true,
             max_syscall_cycles,
             report: ExecutionReport::default(),
@@ -1105,7 +1104,6 @@ impl<'a> Executor<'a> {
     /// This function will panic if the address is not aligned or if the memory accesses are already
     /// initialized.
     pub fn mw_cpu(&mut self, addr: u32, value: u32) {
-        // Track the access for the debugger.
         // Track the access for the debugger.
         if let Some(state) = &mut self.debugger_state {
             state.last_access_addr = Some(addr);

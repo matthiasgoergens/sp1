@@ -64,7 +64,8 @@ You can also specify a custom port:
 If you are writing a custom script using the SP1 SDK, you can enable the debugger by calling `run_debugger(port)` on the `Executor`.
 
 ```rust
-use sp1_sdk::{Executor, Program, SP1CoreOpts};
+use sp1_core_executor::{Executor, Program};
+use sp1_sdk::SP1CoreOpts;
 
 let program = Program::from_elf("path/to/elf")?;
 let mut executor = Executor::new(program, SP1CoreOpts::default());
