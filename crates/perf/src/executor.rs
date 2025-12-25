@@ -80,6 +80,9 @@ fn main() {
                 executor.state.global_clk as f64 / 1_000_000.0 / execution_duration.as_secs_f64()
             );
         }
+        ExecutorMode::Debugger => {
+            unimplemented!("Debugger mode is not supported in sp1-perf. Use the runner in sp1-core-executor specifically for debugging.");
+        }
         ExecutorMode::Checkpoint => {
             let (_, execution_duration) = time_operation(|| executor.run_checkpoint(true));
             println!("Checkpoint mode:");

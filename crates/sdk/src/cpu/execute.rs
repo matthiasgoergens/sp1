@@ -110,6 +110,30 @@ impl<'a> CpuExecuteBuilder<'a> {
         self
     }
 
+    /// Whether to enable the debugger.
+    ///
+    /// # Arguments
+    /// * `value` - Whether to enable the debugger.
+    ///
+    /// # Details
+    /// If set to `true`, the executor will start a GDB server on port 9001 (or as configured by
+    /// `SP1_DEBUGGER_PORT`) and wait for a connection.
+    #[must_use]
+    pub fn with_debugger(mut self, value: bool) -> Self {
+        self.context_builder.with_debugger(value);
+        self
+    }
+
+    /// Set the debugger configuration with a custom port.
+    ///
+    /// # Arguments
+    /// * `port` - The port to listen on.
+    #[must_use]
+    pub fn with_debugger_port(mut self, port: u16) -> Self {
+        self.context_builder.with_debugger_port(port);
+        self
+    }
+
     /// Whether to enable gas calculation in the executor.
     ///
     /// # Arguments

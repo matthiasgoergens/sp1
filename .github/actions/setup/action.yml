@@ -104,12 +104,12 @@ runs:
     - name: Install pkg-config and openssl
       shell: bash
       run: |
-        if ! dpkg -s pkg-config libssl-dev &> /dev/null; then
-          echo "pkg-config and/or libssl-dev not found. Installing..."
+        if ! dpkg -s pkg-config libssl-dev gdb-multiarch lldb &> /dev/null; then
+          echo "Dependencies (pkg-config, libssl-dev, gdb-multiarch, lldb) not found. Installing..."
           sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev
+          sudo apt-get install -y pkg-config libssl-dev gdb-multiarch lldb
         else
-          echo "pkg-config and libssl-dev are already installed."
+          echo "pkg-config, libssl-dev, gdb-multiarch, and lldb are already installed."
         fi
 
     - name: Echo docker buildx version

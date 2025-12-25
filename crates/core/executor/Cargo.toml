@@ -46,6 +46,8 @@ enum-map = { version = "2.7.3", features = ["serde"] }
 clap = { version = "4.5.9", features = ["derive"] }
 subenum = "1.1.2"
 range-set-blaze = "0.1.16"
+gdbstub = { version = "0.7.3", features = ["std", "alloc"] }
+gdbstub_arch = "0.3.0"
 
 # profiling
 goblin = { version = "0.9", optional = true }
@@ -65,6 +67,7 @@ profiling = [
   "dep:gecko_profile",
   "dep:indicatif",
 ]
+debugger-tests = []
 
 [lints]
 workspace = true

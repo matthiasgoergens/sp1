@@ -6,6 +6,11 @@ use crate::{
 };
 use hashbrown::HashMap;
 use std::io::Write;
+use std::net::TcpListener;
+#[cfg(unix)]
+use std::os::unix::net::UnixListener;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use sp1_primitives::consts::fd::LOWEST_ALLOWED_FD;
 
@@ -34,6 +39,32 @@ pub struct SP1Context<'a> {
 
     /// The IO options for the [`SP1Executor`].
     pub io_options: IoOptions<'a>,
+
+    /// The debugger configuration.
+    pub debugger: Option<DebuggerConfig>,
+}
+
+/// Configuration for the debugger.
+/// Configuration for the debugger.
+#[derive(Clone, Debug)]
+pub enum DebuggerConfig {
+    /// The port to listen on.
+    Port(u16),
+    /// The socket path to listen on (Unix only).
+    #[cfg(unix)]
+    Socket(PathBuf),
+    /// An existing listener to accept connections on.
+    Listener(Arc<DebuggerListener>),
+}
+
+/// A listener for the debugger.
+#[derive(Debug)]
+pub enum DebuggerListener {
+    /// A TCP listener.
+    Tcp(TcpListener),
+    /// A Unix listener.
+    #[cfg(unix)]
+    Unix(UnixListener),
 }
 
 impl Default for SP1Context<'_> {
@@ -50,6 +81,7 @@ pub struct SP1ContextBuilder<'a> {
     max_cycles: Option<u64>,
     deferred_proof_verification: bool,
     calculate_gas: bool,
+    debugger: Option<DebuggerConfig>,
     io_options: IoOptions<'a>,
 }
 
@@ -63,6 +95,7 @@ impl Default for SP1ContextBuilder<'_> {
             // Always verify deferred proofs by default.
             deferred_proof_verification: true,
             calculate_gas: true,
+            debugger: None,
             io_options: IoOptions::default(),
         }
     }
@@ -125,6 +158,7 @@ impl<'a> SP1ContextBuilder<'a> {
             max_cycles: cycle_limit,
             deferred_proof_verification,
             calculate_gas,
+            debugger: self.debugger.take(),
             io_options: take(&mut self.io_options),
         }
     }
@@ -186,6 +220,42 @@ impl<'a> SP1ContextBuilder<'a> {
     /// Set the deferred proof verification flag.
     pub fn set_deferred_proof_verification(&mut self, value: bool) -> &mut Self {
         self.deferred_proof_verification = value;
+        self
+    }
+
+    /// Set the debugger flag.
+    ///
+    /// If set to true, the executor will start a GDB server on the default port (9001) or the port
+    /// specified by the `SP1_DEBUGGER_PORT` environment variable.
+    pub fn with_debugger(&mut self, enable: bool) -> &mut Self {
+        if enable {
+            let port = std::env::var("SP1_DEBUGGER_PORT")
+                .ok()
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(9001);
+            self.debugger = Some(DebuggerConfig::Port(port));
+        } else {
+            self.debugger = None;
+        }
+        self
+    }
+
+    /// Set the debugger configuration with a custom port.
+    pub fn with_debugger_port(&mut self, port: u16) -> &mut Self {
+        self.debugger = Some(DebuggerConfig::Port(port));
+        self
+    }
+
+    /// Set the debugger configuration with a custom unix socket path.
+    #[cfg(unix)]
+    pub fn with_debugger_socket(&mut self, path: PathBuf) -> &mut Self {
+        self.debugger = Some(DebuggerConfig::Socket(path));
+        self
+    }
+
+    /// Set the debugger configuration to use the specified listener.
+    pub fn with_debugger_listener(&mut self, listener: DebuggerListener) -> &mut Self {
+        self.debugger = Some(DebuggerConfig::Listener(Arc::new(listener)));
         self
     }
 

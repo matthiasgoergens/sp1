@@ -243,6 +243,9 @@ impl<V: Copy> PagedMemory<V> {
     /// Get a reference to the memory value at the given address, if it exists.
     pub fn get(&self, addr: u32) -> Option<&V> {
         let (upper, lower) = Self::indices(addr);
+        if upper >= self.index.len() {
+            return None;
+        }
         let index = self.index[upper];
         if index == NO_PAGE {
             None
@@ -254,6 +257,9 @@ impl<V: Copy> PagedMemory<V> {
     /// Get a mutable reference to the memory value at the given address, if it exists.
     pub fn get_mut(&mut self, addr: u32) -> Option<&mut V> {
         let (upper, lower) = Self::indices(addr);
+        if upper >= self.index.len() {
+            return None;
+        }
         let index = self.index[upper];
         if index == NO_PAGE {
             None

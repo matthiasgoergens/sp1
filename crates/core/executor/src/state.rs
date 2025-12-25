@@ -107,6 +107,58 @@ pub struct ForkState {
     pub total_unconstrained_cycles: u64,
 }
 
+/// Holds data to track changes made to the runtime during a single cycle.
+///
+/// This is used for the debugger to enable reverse debugging without cloning the entire state.
+#[derive(Debug, Clone, Default)]
+pub struct DiffState {
+    /// The `global_clk` value before the cycle.
+    pub global_clk: u64,
+    /// The `clk` value before the cycle.
+    pub clk: u32,
+    /// The `pc` value before the cycle.
+    pub pc: u32,
+    /// Memory changes made during the cycle (address -> previous value).
+    pub memory_diff: HashMap<u32, Option<MemoryRecord>>,
+}
+
+impl DiffState {
+    /// Allow creating a new `DiffState` with initial values.
+    #[must_use]
+    pub fn new(pc: u32, clk: u32, global_clk: u64) -> Self {
+        Self { pc, clk, global_clk, memory_diff: HashMap::new() }
+    }
+
+    /// Apply the diff to the execution state to revert it to the previous state.
+    pub fn apply_to(&self, state: &mut ExecutionState) {
+        state.pc = self.pc;
+        state.clk = self.clk;
+        state.global_clk = self.global_clk;
+
+        // Apply memory/register changes.
+        for (addr, record) in &self.memory_diff {
+            match record {
+                Some(r) => {
+                    if *addr < 32 {
+                        state.memory.registers.insert(*addr, *r);
+                    } else {
+                        state.memory.page_table.insert(*addr, *r);
+                    }
+                }
+                None => {
+                    // If the previous record was None, it means the entry was Vacant before.
+                    // So we must remove it to restore state.
+                    if *addr < 32 {
+                        state.memory.registers.remove(*addr);
+                    } else {
+                        state.memory.page_table.remove(*addr);
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl ExecutionState {
     /// Save the execution state to a file.
     pub fn save(&self, file: &mut File) -> std::io::Result<()> {
@@ -115,5 +167,71 @@ impl ExecutionState {
         writer.flush()?;
         writer.seek(std::io::SeekFrom::Start(0))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_diff_state_apply_to() {
+        let mut state = ExecutionState::new(0x1000);
+        state.clk = 10;
+        state.global_clk = 100;
+
+        // Setup initial state: Register x1=5, Memory[0x2000]=42
+        let reg_record = MemoryRecord { value: 5, shard: 1, timestamp: 9 };
+        state.memory.registers.insert(1, reg_record);
+
+        let mem_record = MemoryRecord { value: 42, shard: 1, timestamp: 9 };
+        state.memory.page_table.insert(0x2000, mem_record);
+
+        // CREATE DIFF: This diff represents the state BEFORE modification.
+        // It captures that x1 was 5 and 0x2000 was 42.
+        // It also captures that 0x3000 was NOT set (Vacancy).
+        let mut diff = DiffState::new(0x1000, 10, 100);
+        diff.memory_diff.insert(1, Some(reg_record));
+        diff.memory_diff.insert(0x2000, Some(mem_record));
+        // We will simulate writing to 0x3000, so the diff should record that it was previously None.
+        diff.memory_diff.insert(0x3000, None);
+
+        // MODIFY STATE: Simulate execution moving forward.
+        state.pc = 0x1004;
+        state.clk = 11;
+        state.global_clk = 101;
+
+        // 1. Modify x1 -> 10
+        state.memory.registers.insert(1, MemoryRecord { value: 10, shard: 1, timestamp: 11 });
+
+        // 2. Modify 0x2000 -> 84
+        state.memory.page_table.insert(0x2000, MemoryRecord { value: 84, shard: 1, timestamp: 11 });
+
+        // 3. New write to 0x3000 -> 123 (was empty)
+        state
+            .memory
+            .page_table
+            .insert(0x3000, MemoryRecord { value: 123, shard: 1, timestamp: 11 });
+
+        // ASSERT MODIFIED STATE
+        assert_eq!(state.pc, 0x1004);
+        assert_eq!(state.memory.registers.get(1).unwrap().value, 10);
+        assert_eq!(state.memory.page_table.get(0x2000).unwrap().value, 84);
+        assert_eq!(state.memory.page_table.get(0x3000).unwrap().value, 123);
+
+        // APPLY DIFF: Revert to previous state.
+        diff.apply_to(&mut state);
+
+        // ASSERT REVERTED STATE
+        assert_eq!(state.pc, 0x1000);
+        assert_eq!(state.clk, 10);
+        assert_eq!(state.global_clk, 100);
+
+        // x1 should be 5
+        assert_eq!(state.memory.registers.get(1).unwrap().value, 5);
+        // 0x2000 should be 42
+        assert_eq!(state.memory.page_table.get(0x2000).unwrap().value, 42);
+        // 0x3000 should be None (removed)
+        assert!(state.memory.page_table.get(0x3000).is_none());
     }
 }
