@@ -35,15 +35,15 @@ use gdbstub_arch::riscv::{reg::RiscvCoreRegs, Riscv32};
 use crate::{
     events::MemoryRecord,
     executor::{ExecutionDirection, Executor, MemoryAccessType},
-    state::ExecutionState,
+    state::DiffState,
     syscalls::SyscallCode,
 };
+use gdbstub::conn::{Connection, ConnectionExt};
 use hashbrown::{HashMap, HashSet};
 use std::collections::VecDeque;
 use std::net::TcpStream;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
-use gdbstub::conn::{Connection, ConnectionExt};
 
 /// A wrapper around various connection types.
 /// A wrapper around various connection types.
@@ -105,10 +105,10 @@ impl ConnectionExt for DebuggerConnection {
             }
             #[cfg(unix)]
             InnerDebuggerConnection::Unix(s) => {
-                 s.set_nonblocking(true).ok();
-                 let r = std::io::Read::read(s, &mut buf);
-                 s.set_nonblocking(false).ok();
-                 r
+                s.set_nonblocking(true).ok();
+                let r = std::io::Read::read(s, &mut buf);
+                s.set_nonblocking(false).ok();
+                r
             }
         };
 
@@ -142,8 +142,6 @@ impl Connection for DebuggerConnection {
             InnerDebuggerConnection::Unix(s) => <UnixStream as Connection>::flush(s),
         }
     }
-    
-
 }
 
 /// The state of the debugger.
@@ -153,15 +151,15 @@ pub struct DebuggerState {
     pub(crate) breakpoints: HashSet<u32>,
     pub(crate) watchpoints: HashMap<u32, gdbstub::target::ext::breakpoints::WatchKind>,
     pub(crate) last_syscall: Option<SyscallCode>,
-    pub(crate) history: VecDeque<ExecutionState>,
+    pub(crate) history: VecDeque<DiffState>,
     pub(crate) last_access_addr: Option<u32>,
     pub(crate) last_access_type: Option<MemoryAccessType>,
     pub(crate) catch_syscalls: HashSet<u32>,
     pub(crate) catch_syscalls_enabled: bool,
     pub(crate) at_syscall_entry: bool,
     pub(crate) is_stepping: bool,
+    pub(crate) current_diff: crate::state::DiffState,
 }
-
 
 impl Target for Executor<'_> {
     type Arch = Riscv32;
@@ -277,7 +275,7 @@ impl SingleThreadResume for Executor<'_> {
 }
 
 impl SingleThreadSingleStep for Executor<'_> {
-     fn step(&mut self, _signal: Option<Signal>) -> Result<(), <Self as Target>::Error> {
+    fn step(&mut self, _signal: Option<Signal>) -> Result<(), <Self as Target>::Error> {
         if let Some(state) = &mut self.debugger_state {
             state.execution_direction = ExecutionDirection::Forward;
             state.is_stepping = true;
@@ -289,8 +287,8 @@ impl SingleThreadSingleStep for Executor<'_> {
 impl ReverseStep<()> for Executor<'_> {
     fn reverse_step(&mut self, _tid: ()) -> Result<(), <Self as Target>::Error> {
         let history = &mut self.debugger_state.as_mut().unwrap().history;
-        if let Some(prev_state) = history.pop_back() {
-            self.state = prev_state;
+        if let Some(diff) = history.pop_back() {
+            diff.apply_to(&mut self.state);
             self.debugger_state.as_mut().unwrap().is_stepping = true;
             Ok(())
         } else {
@@ -523,6 +521,7 @@ impl<'a> gdbstub::stub::run_blocking::BlockingEventLoop for DebuggerEventLoop<'a
     type Connection = DebuggerConnection;
     type StopReason = BaseStopReason<(), u32>;
 
+    #[allow(clippy::too_many_lines)]
     fn wait_for_stop_reason(
         target: &mut Self::Target,
         conn: &mut Self::Connection,
@@ -536,11 +535,10 @@ impl<'a> gdbstub::stub::run_blocking::BlockingEventLoop for DebuggerEventLoop<'a
         loop {
             // Check for GDB interrupt every 1024 cycles.
             if target.state.clk % 1024 == 0 && conn.check_interrupt() {
-                 return Ok(gdbstub::stub::run_blocking::Event::TargetStopped(
+                return Ok(gdbstub::stub::run_blocking::Event::TargetStopped(
                     BaseStopReason::Signal(Signal::SIGINT),
                 ));
             }
-
 
             // If we are currently at a syscall entry, execute the syscall and stop at Return.
             if target.debugger_state.as_mut().unwrap().at_syscall_entry {
@@ -567,20 +565,32 @@ impl<'a> gdbstub::stub::run_blocking::BlockingEventLoop for DebuggerEventLoop<'a
             let direction = target.debugger_state.as_mut().unwrap().execution_direction;
             match direction {
                 ExecutionDirection::Forward => {
-                    // Save state for reverse debugging if needed.
-                    target.debugger_state.as_mut().unwrap().history.push_back(target.state.clone());
+                    // Initialize current_diff with PRE-execution state.
+                    let pc = target.state.pc;
+                    let clk = target.state.clk;
+                    let global_clk = target.state.global_clk;
 
-                    // Clear last access info before executing.
                     {
                         let state = target.debugger_state.as_mut().unwrap();
+                        state.current_diff = DiffState::new(pc, clk, global_clk);
+                        // Clear last access info before executing.
                         state.last_access_addr = None;
                         state.last_access_type = None;
                         state.last_syscall = None;
                     }
 
                     let done = target.execute_cycle().map_err(|_| {
-                        gdbstub::stub::run_blocking::WaitForStopReasonError::Target("execution failed")
+                        gdbstub::stub::run_blocking::WaitForStopReasonError::Target(
+                            "execution failed",
+                        )
                     })?;
+
+                    // Push the diff to history.
+                    {
+                        let state = target.debugger_state.as_mut().unwrap();
+                        let diff = std::mem::take(&mut state.current_diff);
+                        state.history.push_back(diff);
+                    }
 
                     if done {
                         return Ok(gdbstub::stub::run_blocking::Event::TargetStopped(
@@ -589,10 +599,11 @@ impl<'a> gdbstub::stub::run_blocking::BlockingEventLoop for DebuggerEventLoop<'a
                     }
                 }
                 ExecutionDirection::Backward => {
-                    // Pop history to go back.
-                    let prev_state = target.debugger_state.as_mut().unwrap().history.pop_back();
-                    if let Some(prev) = prev_state {
-                        target.state = prev;
+                    // Pop history (DiffState) to go back.
+                    let diff_opt = target.debugger_state.as_mut().unwrap().history.pop_back();
+                    if let Some(diff) = diff_opt {
+                        diff.apply_to(&mut target.state);
+
                         // In reverse, we don't have new memory accesses or syscalls to report
                         // in the same way, so we clear them to avoid false positives.
                         let state = target.debugger_state.as_mut().unwrap();
@@ -629,9 +640,9 @@ impl<'a> gdbstub::stub::run_blocking::BlockingEventLoop for DebuggerEventLoop<'a
 
             // Check for software breakpoints.
             if state.breakpoints.contains(&target.state.pc) {
-                return Ok(gdbstub::stub::run_blocking::Event::TargetStopped(BaseStopReason::SwBreak(
-                    (),
-                )));
+                return Ok(gdbstub::stub::run_blocking::Event::TargetStopped(
+                    BaseStopReason::SwBreak(()),
+                ));
             }
 
             // Check for watchpoints.
@@ -639,9 +650,9 @@ impl<'a> gdbstub::stub::run_blocking::BlockingEventLoop for DebuggerEventLoop<'a
                 if let Some(kind) = state.watchpoints.get(&addr) {
                     let triggered = matches!(
                         (kind, state.last_access_type),
-                        (WatchKind::Write, Some(MemoryAccessType::Write)) |
-                            (WatchKind::Read, Some(MemoryAccessType::Read)) |
-                            (WatchKind::ReadWrite, Some(_))
+                        (WatchKind::Write, Some(MemoryAccessType::Write))
+                            | (WatchKind::Read, Some(MemoryAccessType::Read))
+                            | (WatchKind::ReadWrite, Some(_))
                     );
 
                     if triggered {
@@ -654,7 +665,9 @@ impl<'a> gdbstub::stub::run_blocking::BlockingEventLoop for DebuggerEventLoop<'a
 
             // If stepping, return DoneStep. Otherwise loop.
             if state.is_stepping {
-                return Ok(gdbstub::stub::run_blocking::Event::TargetStopped(BaseStopReason::DoneStep));
+                return Ok(gdbstub::stub::run_blocking::Event::TargetStopped(
+                    BaseStopReason::DoneStep,
+                ));
             }
         }
     }

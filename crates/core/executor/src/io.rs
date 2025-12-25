@@ -38,7 +38,7 @@ impl Executor<'_> {
         proof: SP1ReduceProof<BabyBearPoseidon2>,
         vk: StarkVerifyingKey<BabyBearPoseidon2>,
     ) {
-        self.state.proof_stream.push((proof, vk));
+        std::sync::Arc::make_mut(&mut self.state.proof_stream).push((proof, vk));
     }
 
     /// Read a serializable public values from the public values stream.
