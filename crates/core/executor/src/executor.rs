@@ -2029,9 +2029,9 @@ impl<'a> Executor<'a> {
         if debugger_config.is_none() {
             if let Ok(port_str) = std::env::var("SP1_DEBUGGER_PORT") {
                  let port = port_str.parse::<u16>().unwrap_or(9001);
-                 debugger_config = Some(crate::context::DebuggerConfig { port: Some(port), socket: None });
+                 debugger_config = Some(crate::context::DebuggerConfig { port: Some(port), socket: None, listener: None });
             } else if std::env::var("SP1_DEBUGGER").map(|v| v == "true" || v == "1").unwrap_or(false) {
-                 debugger_config = Some(crate::context::DebuggerConfig { port: Some(9001), socket: None });
+                 debugger_config = Some(crate::context::DebuggerConfig { port: Some(9001), socket: None, listener: None });
             }
         }
 
@@ -2093,7 +2093,23 @@ impl<'a> Executor<'a> {
         self.executor_mode = ExecutorMode::Trace;
         self.print_report = true;
 
-        let (connection, addr_msg) = if let Some(path) = config.socket {
+        let (connection, addr_msg) = if let Some(listener) = &config.listener {
+            match &**listener {
+                crate::context::DebuggerListener::Tcp(l) => {
+                     let local_addr = l.local_addr().map_err(|_| ExecutionError::DebuggerError())?;
+                     tracing::info!("Waiting for debugger connection on injected listener {}...", local_addr);
+                     let (stream, addr) = l.accept().map_err(|_| ExecutionError::DebuggerError())?;
+                     (DebuggerConnection::new_tcp(stream), format!("{addr}"))
+                }
+                #[cfg(unix)]
+                crate::context::DebuggerListener::Unix(l) => {
+                     let local_addr = l.local_addr().map_err(|_| ExecutionError::DebuggerError())?;
+                     tracing::info!("Waiting for debugger connection on injected listener {:?}...", local_addr);
+                     let (stream, _) = l.accept().map_err(|_| ExecutionError::DebuggerError())?;
+                     (DebuggerConnection::new_unix(stream), "injected_unix_socket".to_string())
+                }
+            }
+        } else if let Some(path) = config.socket {
             #[cfg(unix)]
             {
                 // Unlink if exists?

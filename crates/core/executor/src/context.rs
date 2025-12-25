@@ -7,6 +7,11 @@ use crate::{
 use hashbrown::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::net::TcpListener;
+#[cfg(unix)]
+use std::os::unix::net::UnixListener;
+
 
 use sp1_primitives::consts::fd::LOWEST_ALLOWED_FD;
 
@@ -47,6 +52,18 @@ pub struct DebuggerConfig {
     pub port: Option<u16>,
     /// The socket path to listen on (Unix only).
     pub socket: Option<PathBuf>,
+    /// An existing listener to accept connections on.
+    pub listener: Option<Arc<DebuggerListener>>,
+}
+
+/// A listener for the debugger.
+#[derive(Debug)]
+pub enum DebuggerListener {
+    /// A TCP listener.
+    Tcp(TcpListener),
+    /// A Unix listener.
+    #[cfg(unix)]
+    Unix(UnixListener),
 }
 
 impl Default for SP1Context<'_> {
@@ -211,7 +228,7 @@ impl<'a> SP1ContextBuilder<'a> {
     /// specified by the `SP1_DEBUGGER_PORT` environment variable.
     pub fn with_debugger(&mut self, enable: bool) -> &mut Self {
         if enable {
-            self.debugger = Some(DebuggerConfig { port: Some(9001), socket: None });
+            self.debugger = Some(DebuggerConfig { port: Some(9001), socket: None, listener: None });
         } else {
             self.debugger = None;
         }
@@ -223,14 +240,20 @@ impl<'a> SP1ContextBuilder<'a> {
         // If debugger not present, create new config or update existing?
         // Builder usually allows incremental updates.
         // Assuming we want to ENABLE debugger with this port.
-        self.debugger = Some(DebuggerConfig { port: Some(port), socket: None });
+        self.debugger = Some(DebuggerConfig { port: Some(port), socket: None, listener: None });
         self
     }
 
     /// Set the debugger configuration with a custom unix socket path.
     pub fn with_debugger_socket(&mut self, path: PathBuf) -> &mut Self {
-        self.debugger = Some(DebuggerConfig { port: None, socket: Some(path) });
+        self.debugger = Some(DebuggerConfig { port: None, socket: Some(path), listener: None });
         self
+    }
+
+    /// Set the debugger configuration to use the specified listener.
+    pub fn with_debugger_listener(&mut self, listener: DebuggerListener) -> &mut Self {
+         self.debugger = Some(DebuggerConfig { port: None, socket: None, listener: Some(Arc::new(listener)) });
+         self
     }
 
     /// Set the `stdout` writer.
