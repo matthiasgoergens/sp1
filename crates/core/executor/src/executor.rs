@@ -375,7 +375,6 @@ impl<'a> Executor<'a> {
             unconstrained_state: Box::new(ForkState::default()),
             syscall_map,
             executor_mode: ExecutorMode::Trace,
-
             emit_global_memory_events: true,
             max_syscall_cycles,
             report: ExecutionReport::default(),
