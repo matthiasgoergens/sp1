@@ -21,8 +21,6 @@ fn get_gdb_command() -> Command {
 
 #[test]
 fn test_remote_debugger() {
-
-
     // Create a simple program:
     // 0: ADD x1, x0, 10
     // 4: ADD x1, x0, 20
@@ -133,8 +131,6 @@ fn test_remote_debugger_lldb() {
 
 #[test]
 fn test_reverse_debugging() {
-
-
     let instructions = vec![
         Instruction::new(Opcode::ADD, 1, 0, 10, false, true), // 0
         Instruction::new(Opcode::ADD, 1, 0, 20, false, true), // 4
