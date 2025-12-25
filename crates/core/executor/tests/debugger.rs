@@ -35,12 +35,13 @@ fn test_remote_debugger() {
     ];
     let program = Program::new(instructions, 0, 0);
 
-    // Pick a port based on PID to avoid some collisions
-    let port = 10000 + (std::process::id() % 10000) as u16;
+    // Use Unix Domain Socket
+    let socket_path = std::env::temp_dir().join(format!("sp1_gdb_{}.sock", std::process::id()));
+    let socket_path_clone = socket_path.clone();
 
     // Start debugger in background thread
     thread::spawn(move || {
-        let mut executor = Executor::with_context(program, SP1CoreOpts::default(), SP1Context::builder().with_debugger(true).with_debugger_port(port).build());
+        let mut executor = Executor::with_context(program, SP1CoreOpts::default(), SP1Context::builder().with_debugger(true).with_debugger_socket(socket_path_clone).build());
         // This will block waiting for connection
         let _ = executor.run_fast(); 
     });
@@ -50,8 +51,8 @@ fn test_remote_debugger() {
 
     // Interact with GDB
     let mut child = get_gdb_command()
-        .arg("-q")
-        .arg("-nx") // No .gdbinit
+        .arg("--quiet")
+        .arg("--nx") // No .gdbinit
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -66,7 +67,7 @@ fn test_remote_debugger() {
     // 3. Step
     // 4. Check PC (should be 4)
     // 5. Quit
-    writeln!(stdin, "target remote 127.0.0.1:{}", port).unwrap();
+    writeln!(stdin, "target remote {}", socket_path.to_str().unwrap()).unwrap();
     writeln!(stdin, "info registers pc").unwrap();
     writeln!(stdin, "stepi").unwrap();
     writeln!(stdin, "info registers pc").unwrap();
@@ -75,7 +76,7 @@ fn test_remote_debugger() {
     let output = child.wait_with_output().expect("Failed to read stdout");
     let stdout = String::from_utf8_lossy(&output.stdout);
     
-    println!("GDB Output:\n{}", stdout);
+
 
     // Assertions
     // Note: GDB output format varies, but usually contains "pc <val>".
@@ -92,7 +93,7 @@ fn test_remote_debugger_lldb() {
     ];
     let program = Program::new(instructions, 0, 0);
 
-    // Pick a port based on PID + offset
+    // Use TCP for LLDB (Unix socket unsupported by local LLDB?)
     let port = 12000 + (std::process::id() % 10000) as u16;
 
     thread::spawn(move || {
@@ -103,7 +104,7 @@ fn test_remote_debugger_lldb() {
     thread::sleep(Duration::from_secs(1));
 
     // Interact with LLDB
-    // lldb --batch -o "gdb-remote :<port>" -o "register read pc" -o "thread step-inst" -o "register read pc"
+    // lldb --batch -o "gdb-remote <host>:<port>" ...
     let child = Command::new("lldb")
         .arg("--batch")
         .arg("-o")
@@ -123,6 +124,8 @@ fn test_remote_debugger_lldb() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
+
+
     // LLDB Output format:
     // pc = 0x00000000
     assert!(stdout.contains("pc = 0") || stderr.contains("pc = 0") || stdout.contains("pc = 0x0"), "Expected initial PC 0");
@@ -139,18 +142,20 @@ fn test_reverse_debugging() {
     ];
     let program = Program::new(instructions, 0, 0);
 
-    let port = 14000 + (std::process::id() % 10000) as u16;
+    // Use Unix Domain Socket
+    let socket_path = std::env::temp_dir().join(format!("sp1_gdb_rev_{}.sock", std::process::id()));
+    let socket_path_clone = socket_path.clone();
 
     thread::spawn(move || {
-        let mut executor = Executor::with_context(program, SP1CoreOpts::default(), SP1Context::builder().with_debugger(true).with_debugger_port(port).build());
+        let mut executor = Executor::with_context(program, SP1CoreOpts::default(), SP1Context::builder().with_debugger(true).with_debugger_socket(socket_path_clone).build());
         let _ = executor.run_fast(); 
     });
 
     thread::sleep(Duration::from_secs(1));
 
     let mut child = get_gdb_command()
-        .arg("-q")
-        .arg("-nx")
+        .arg("--quiet")
+        .arg("--nx")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -165,7 +170,7 @@ fn test_reverse_debugging() {
     // 4. Breakpoint at 0
     // 5. Reverse-continue (8->...->0).
     // 6. Check PC.
-    writeln!(stdin, "target remote 127.0.0.1:{}", port).unwrap();
+    writeln!(stdin, "target remote {}", socket_path.to_str().unwrap()).unwrap();
     writeln!(stdin, "stepi").unwrap(); // 4
     writeln!(stdin, "stepi").unwrap(); // 8
     writeln!(stdin, "stepi").unwrap(); // 12
@@ -182,7 +187,7 @@ fn test_reverse_debugging() {
 
     let output = child.wait_with_output().expect("Failed to read stdout");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    println!("GDB Output:\n{}", stdout);
+
 
     assert!(stdout.contains("0xc"), "Expected PC 12 after 3 steps");
     // assert!(stdout.contains("0x8"), "Expected PC 8 after reverse-step");

@@ -40,6 +40,111 @@ use crate::{
 };
 use hashbrown::{HashMap, HashSet};
 use std::collections::VecDeque;
+use std::net::TcpStream;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+use gdbstub::conn::{Connection, ConnectionExt};
+
+/// A wrapper around various connection types.
+/// A wrapper around various connection types.
+pub struct DebuggerConnection {
+    inner: InnerDebuggerConnection,
+    peek_byte: Option<u8>,
+}
+
+enum InnerDebuggerConnection {
+    Tcp(TcpStream),
+    #[cfg(unix)]
+    Unix(UnixStream),
+}
+
+impl DebuggerConnection {
+    /// Create a new TCP connection.
+    #[must_use]
+    pub fn new_tcp(stream: TcpStream) -> Self {
+        Self { inner: InnerDebuggerConnection::Tcp(stream), peek_byte: None }
+    }
+
+    /// Create a new Unix connection.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn new_unix(stream: UnixStream) -> Self {
+        Self { inner: InnerDebuggerConnection::Unix(stream), peek_byte: None }
+    }
+
+    /// Check for GDB interrupt (0x03) non-blockingly.
+    pub fn check_interrupt(&mut self) -> bool {
+        matches!(self.peek(), Ok(Some(0x03)))
+    }
+}
+
+impl ConnectionExt for DebuggerConnection {
+    fn read(&mut self) -> Result<u8, Self::Error> {
+        if let Some(b) = self.peek_byte.take() {
+            return Ok(b);
+        }
+        match &mut self.inner {
+            InnerDebuggerConnection::Tcp(s) => <TcpStream as ConnectionExt>::read(s),
+            #[cfg(unix)]
+            InnerDebuggerConnection::Unix(s) => <UnixStream as ConnectionExt>::read(s),
+        }
+    }
+
+    fn peek(&mut self) -> Result<Option<u8>, Self::Error> {
+        if let Some(b) = self.peek_byte {
+            return Ok(Some(b));
+        }
+
+        let mut buf = [0u8; 1];
+        let res = match &mut self.inner {
+            InnerDebuggerConnection::Tcp(s) => {
+                s.set_nonblocking(true).ok();
+                let r = std::io::Read::read(s, &mut buf);
+                s.set_nonblocking(false).ok();
+                r
+            }
+            #[cfg(unix)]
+            InnerDebuggerConnection::Unix(s) => {
+                 s.set_nonblocking(true).ok();
+                 let r = std::io::Read::read(s, &mut buf);
+                 s.set_nonblocking(false).ok();
+                 r
+            }
+        };
+
+        match res {
+            Ok(1) => {
+                self.peek_byte = Some(buf[0]);
+                Ok(Some(buf[0]))
+            }
+            Ok(_) => Ok(None), // EOF or 0 bytes
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+impl Connection for DebuggerConnection {
+    type Error = std::io::Error;
+
+    fn write(&mut self, byte: u8) -> Result<(), Self::Error> {
+        match &mut self.inner {
+            InnerDebuggerConnection::Tcp(s) => <TcpStream as Connection>::write(s, byte),
+            #[cfg(unix)]
+            InnerDebuggerConnection::Unix(s) => <UnixStream as Connection>::write(s, byte),
+        }
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        match &mut self.inner {
+            InnerDebuggerConnection::Tcp(s) => <TcpStream as Connection>::flush(s),
+            #[cfg(unix)]
+            InnerDebuggerConnection::Unix(s) => <UnixStream as Connection>::flush(s),
+        }
+    }
+    
+
+}
 
 /// The state of the debugger.
 #[derive(Debug, Default)]
@@ -415,7 +520,7 @@ pub struct DebuggerEventLoop<'a>(std::marker::PhantomData<&'a ()>);
 
 impl<'a> gdbstub::stub::run_blocking::BlockingEventLoop for DebuggerEventLoop<'a> {
     type Target = Executor<'a>;
-    type Connection = std::net::TcpStream;
+    type Connection = DebuggerConnection;
     type StopReason = BaseStopReason<(), u32>;
 
     fn wait_for_stop_reason(
@@ -429,20 +534,11 @@ impl<'a> gdbstub::stub::run_blocking::BlockingEventLoop for DebuggerEventLoop<'a
         >,
     > {
         loop {
-            // Check for GDB interrupt every 1024 cycles to avoid blocking overhead.
-            if target.state.clk % 1024 == 0 {
-                conn.set_nonblocking(true).ok();
-                let mut buf = [0u8; 1];
-                let peek_res = conn.peek(&mut buf);
-                conn.set_nonblocking(false).ok();
-
-                if let Ok(1) = peek_res {
-                    if buf[0] == 0x03 {
-                         return Ok(gdbstub::stub::run_blocking::Event::TargetStopped(
-                            BaseStopReason::Signal(Signal::SIGINT),
-                        ));
-                    }
-                }
+            // Check for GDB interrupt every 1024 cycles.
+            if target.state.clk % 1024 == 0 && conn.check_interrupt() {
+                 return Ok(gdbstub::stub::run_blocking::Event::TargetStopped(
+                    BaseStopReason::Signal(Signal::SIGINT),
+                ));
             }
 
 

@@ -1,6 +1,9 @@
 #[cfg(feature = "profiling")]
 use std::{fs::File, io::BufWriter};
 use std::{str::FromStr, sync::Arc};
+#[cfg(unix)]
+use std::os::unix::net::UnixListener;
+use std::net::TcpListener;
 
 use crate::estimator::RecordEstimator;
 #[cfg(feature = "profiling")]
@@ -2021,26 +2024,21 @@ impl<'a> Executor<'a> {
     /// This function will return an error if the program execution fails.
     pub fn run_fast(&mut self) -> Result<(), ExecutionError> {
         // Check if the debugger should be started.
-        let debugger_port = self.debugger.as_ref().map(|config| config.port).or_else(|| {
-            if std::env::var("SP1_DEBUGGER")
-                .map(|v| v.parse::<bool>().expect("SP1_DEBUGGER must be a boolean"))
-                .unwrap_or(false)
-            {
-                Some(
-                    std::env::var("SP1_DEBUGGER_PORT")
-                        .unwrap_or_else(|_| "9001".to_string())
-                        .parse::<u16>()
-                        .unwrap_or(9001),
-                )
-            } else {
-                None
+        // Check if the debugger should be started.
+        let mut debugger_config = self.debugger.clone();
+        if debugger_config.is_none() {
+            if let Ok(port_str) = std::env::var("SP1_DEBUGGER_PORT") {
+                 let port = port_str.parse::<u16>().unwrap_or(9001);
+                 debugger_config = Some(crate::context::DebuggerConfig { port: Some(port), socket: None });
+            } else if std::env::var("SP1_DEBUGGER").map(|v| v == "true" || v == "1").unwrap_or(false) {
+                 debugger_config = Some(crate::context::DebuggerConfig { port: Some(9001), socket: None });
             }
-        });
+        }
 
-        if let Some(port) = debugger_port {
+        if let Some(config) = debugger_config {
             self.executor_mode = ExecutorMode::Debugger;
             self.debugger_state = Some(gdb::DebuggerState::default());
-            return self.run_debugger(port);
+            return self.run_debugger(config);
         }
 
         self.executor_mode = ExecutorMode::Simple;
@@ -2088,21 +2086,44 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
-    /// Run the executor with a GDB server on the given port.
-    pub fn run_debugger(&mut self, port: u16) -> Result<(), ExecutionError> {
-        use crate::gdb::DebuggerEventLoop;
+    /// Run the executor with a GDB server using the provided configuration.
+    pub fn run_debugger(&mut self, config: crate::context::DebuggerConfig) -> Result<(), ExecutionError> {
+        use crate::gdb::{DebuggerEventLoop, DebuggerConnection};
 
         self.executor_mode = ExecutorMode::Trace;
         self.print_report = true;
 
-        let sockaddr = format!("0.0.0.0:{port}");
-        let listener =
-            std::net::TcpListener::bind(&sockaddr).map_err(|_| ExecutionError::DebuggerError())?;
-        tracing::info!("Waiting for debugger connection on {}...", sockaddr);
-        let (stream, addr) = listener.accept().map_err(|_| ExecutionError::DebuggerError())?;
-        tracing::info!("Debugger client connected from {}", addr);
+        let (connection, addr_msg) = if let Some(path) = config.socket {
+            #[cfg(unix)]
+            {
+                // Unlink if exists?
+                if path.exists() {
+                    std::fs::remove_file(&path).map_err(|_| ExecutionError::DebuggerError())?;
+                }
+                let listener = UnixListener::bind(&path).map_err(|_| ExecutionError::DebuggerError())?;
+                tracing::info!("Waiting for debugger connection on {}...", path.display());
+                let (stream, _) = listener.accept().map_err(|_| ExecutionError::DebuggerError())?;
+                (DebuggerConnection::new_unix(stream), format!("{}", path.display()))
+            }
+            #[cfg(not(unix))]
+            {
+                tracing::error!("Unix sockets are not supported on this platform.");
+                return Err(ExecutionError::DebuggerError());
+            }
+        } else {
+            let port = config.port.unwrap_or(9001);
+            let sockaddr = format!("0.0.0.0:{port}");
+            let listener = TcpListener::bind(&sockaddr).map_err(|_| ExecutionError::DebuggerError())?;
+            // If port was 0, get actual port?
+            let local_addr = listener.local_addr().map_err(|_| ExecutionError::DebuggerError())?;
+            tracing::info!("Waiting for debugger connection on {}...", local_addr);
+            let (stream, addr) = listener.accept().map_err(|_| ExecutionError::DebuggerError())?;
+            (DebuggerConnection::new_tcp(stream), format!("{addr}"))
+        };
+        
+        tracing::info!("Debugger client connected from {}", addr_msg);
 
-        let debugger = gdbstub::stub::GdbStub::new(stream);
+        let debugger = gdbstub::stub::GdbStub::new(connection);
         match debugger.run_blocking::<DebuggerEventLoop<'_>>(self) {
             Ok(stop_reason) => {
                 tracing::info!("Debugger session ended with stop reason: {:?}", stop_reason);
