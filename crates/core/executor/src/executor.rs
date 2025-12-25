@@ -2067,20 +2067,12 @@ impl<'a> Executor<'a> {
         if debugger_config.is_none() {
             if let Ok(port_str) = std::env::var("SP1_DEBUGGER_PORT") {
                 let port = port_str.parse::<u16>().unwrap_or(9001);
-                debugger_config = Some(crate::context::DebuggerConfig {
-                    port: Some(port),
-                    socket: None,
-                    listener: None,
-                });
+                debugger_config = Some(crate::context::DebuggerConfig::Port(port));
             } else if std::env::var("SP1_DEBUGGER")
                 .map(|v| v == "true" || v == "1")
                 .unwrap_or(false)
             {
-                debugger_config = Some(crate::context::DebuggerConfig {
-                    port: Some(9001),
-                    socket: None,
-                    listener: None,
-                });
+                debugger_config = Some(crate::context::DebuggerConfig::Port(9001));
             }
         }
 
@@ -2145,8 +2137,8 @@ impl<'a> Executor<'a> {
         self.executor_mode = ExecutorMode::Trace;
         self.print_report = true;
 
-        let (connection, addr_msg) = if let Some(listener) = &config.listener {
-            match &**listener {
+        let (connection, addr_msg) = match config {
+            crate::context::DebuggerConfig::Listener(listener) => match &*listener {
                 crate::context::DebuggerListener::Tcp(l) => {
                     let local_addr = l.local_addr().map_err(|_| ExecutionError::DebuggerError())?;
                     tracing::info!(
@@ -2166,10 +2158,9 @@ impl<'a> Executor<'a> {
                     let (stream, _) = l.accept().map_err(|_| ExecutionError::DebuggerError())?;
                     (DebuggerConnection::new_unix(stream), "injected_unix_socket".to_string())
                 }
-            }
-        } else if let Some(path) = config.socket {
+            },
             #[cfg(unix)]
-            {
+            crate::context::DebuggerConfig::Socket(path) => {
                 // Unlink if exists?
                 if path.exists() {
                     std::fs::remove_file(&path).map_err(|_| ExecutionError::DebuggerError())?;
@@ -2180,21 +2171,18 @@ impl<'a> Executor<'a> {
                 let (stream, _) = listener.accept().map_err(|_| ExecutionError::DebuggerError())?;
                 (DebuggerConnection::new_unix(stream), format!("{}", path.display()))
             }
-            #[cfg(not(unix))]
-            {
-                tracing::error!("Unix sockets are not supported on this platform.");
-                return Err(ExecutionError::DebuggerError());
+            crate::context::DebuggerConfig::Port(port) => {
+                let sockaddr = format!("0.0.0.0:{port}");
+                let listener =
+                    TcpListener::bind(&sockaddr).map_err(|_| ExecutionError::DebuggerError())?;
+                // If port was 0, get actual port?
+                let local_addr =
+                    listener.local_addr().map_err(|_| ExecutionError::DebuggerError())?;
+                tracing::info!("Waiting for debugger connection on {}...", local_addr);
+                let (stream, addr) =
+                    listener.accept().map_err(|_| ExecutionError::DebuggerError())?;
+                (DebuggerConnection::new_tcp(stream), format!("{addr}"))
             }
-        } else {
-            let port = config.port.unwrap_or(9001);
-            let sockaddr = format!("0.0.0.0:{port}");
-            let listener =
-                TcpListener::bind(&sockaddr).map_err(|_| ExecutionError::DebuggerError())?;
-            // If port was 0, get actual port?
-            let local_addr = listener.local_addr().map_err(|_| ExecutionError::DebuggerError())?;
-            tracing::info!("Waiting for debugger connection on {}...", local_addr);
-            let (stream, addr) = listener.accept().map_err(|_| ExecutionError::DebuggerError())?;
-            (DebuggerConnection::new_tcp(stream), format!("{addr}"))
         };
 
         tracing::info!("Debugger client connected from {}", addr_msg);
