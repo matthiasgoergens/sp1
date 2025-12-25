@@ -1,10 +1,10 @@
 #![cfg(feature = "debugger-tests")]
 
-use sp1_core_executor::{Executor, Opcode, Program, Instruction, SP1Context, SP1CoreOpts};
+use sp1_core_executor::DebuggerListener;
+use sp1_core_executor::{Executor, Instruction, Opcode, Program, SP1Context, SP1CoreOpts};
+use std::os::unix::net::UnixListener;
 use std::process::{Command, Stdio};
 use std::thread;
-use std::os::unix::net::UnixListener;
-use sp1_core_executor::DebuggerListener;
 
 fn get_gdb_command() -> Command {
     if let Ok(gdb) = std::env::var("SP1_GDB") {
@@ -16,7 +16,10 @@ fn get_gdb_command() -> Command {
             return Command::new(gdb);
         }
     }
-    panic!("gdb-multiarch/gdb not found (tried: {:?}, feature 'debugger-tests' enabled)", candidates);
+    panic!(
+        "gdb-multiarch/gdb not found (tried: {:?}, feature 'debugger-tests' enabled)",
+        candidates
+    );
 }
 
 #[test]
@@ -25,7 +28,7 @@ fn test_remote_debugger() {
     // 0: ADD x1, x0, 10
     // 4: ADD x1, x0, 20
     // 8: JARL x0, x0, 0 (Infinite loop at 0? No, Opcode::JAL or simple instructions)
-    
+
     let instructions = vec![
         // x1 = 10
         Instruction::new(Opcode::ADD, 1, 0, 10, false, true),
@@ -37,25 +40,32 @@ fn test_remote_debugger() {
 
     // Use Unix Domain Socket
     let socket_path = std::env::temp_dir().join(format!("sp1_gdb_{}.sock", std::process::id()));
-    if socket_path.exists() { std::fs::remove_file(&socket_path).unwrap(); }
-    
+    if socket_path.exists() {
+        std::fs::remove_file(&socket_path).unwrap();
+    }
+
     let listener = UnixListener::bind(&socket_path).expect("Failed to bind socket");
- 
+
     // Wait, UnixListener try_clone might be needed if we want to keep it open?
     // Actually we move it into DebuggerListener.
     // But we need to keep it alive? No, it's moved into Context.
     // DebuggerListener takes ownership.
     let listener_enum = DebuggerListener::Unix(listener);
-    
+
     // Start debugger in background thread
     thread::spawn(move || {
-        let mut executor = Executor::with_context(program, SP1CoreOpts::default(), SP1Context::builder().with_debugger(true).with_debugger_listener(listener_enum).build());
+        let mut executor = Executor::with_context(
+            program,
+            SP1CoreOpts::default(),
+            SP1Context::builder().with_debugger(true).with_debugger_listener(listener_enum).build(),
+        );
         // This will block waiting for connection
-        let _ = executor.run_fast(); 
+        let _ = executor.run_fast();
     });
 
     // Write GDB commands to a file
-    let gdb_script_path = std::env::temp_dir().join(format!("sp1_gdb_script_{}.gdb", std::process::id()));
+    let gdb_script_path =
+        std::env::temp_dir().join(format!("sp1_gdb_script_{}.gdb", std::process::id()));
     let gdb_commands = format!(
         "target remote {}
          info registers pc
@@ -69,10 +79,7 @@ fn test_remote_debugger() {
     // Socket exists now
     // Interact with GDB
     let child = get_gdb_command()
-        .arg("--quiet")
-        .arg("--batch")
-        .arg("--nx") // No .gdbinit
-        .arg("--command")
+        .args(["--quiet", "--batch", "--nx", "--command"])
         .arg(&gdb_script_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -81,8 +88,6 @@ fn test_remote_debugger() {
 
     let output = child.wait_with_output().expect("Failed to read stdout");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    
-
 
     // Assertions
     // Note: GDB output format varies, but usually contains "pc <val>".
@@ -101,20 +106,27 @@ fn test_remote_debugger_lldb() {
 
     // Use Unix Domain Socket for LLDB
     let socket_path = std::env::temp_dir().join(format!("sp1_lldb_{}.sock", std::process::id()));
-    if socket_path.exists() { std::fs::remove_file(&socket_path).unwrap(); }
+    if socket_path.exists() {
+        std::fs::remove_file(&socket_path).unwrap();
+    }
     let listener = UnixListener::bind(&socket_path).expect("Failed to bind socket");
     let listener_enum = DebuggerListener::Unix(listener);
 
     thread::spawn(move || {
-        let mut executor = Executor::with_context(program, SP1CoreOpts::default(), SP1Context::builder().with_debugger(true).with_debugger_listener(listener_enum).build());
-        let _ = executor.run_fast(); 
+        let mut executor = Executor::with_context(
+            program,
+            SP1CoreOpts::default(),
+            SP1Context::builder().with_debugger(true).with_debugger_listener(listener_enum).build(),
+        );
+        let _ = executor.run_fast();
     });
 
     // Interact with LLDB
-    let lldb_script_path = std::env::temp_dir().join(format!("sp1_lldb_script_{}.lldb", std::process::id()));
+    let lldb_script_path =
+        std::env::temp_dir().join(format!("sp1_lldb_script_{}.lldb", std::process::id()));
     let lldb_commands = format!(
         "process connect unix-connect://{}
-         register read pc
+         register read pc<
          thread step-inst
          register read pc",
         socket_path.to_str().unwrap()
@@ -134,11 +146,12 @@ fn test_remote_debugger_lldb() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-
-
     // LLDB Output format:
     // pc = 0x00000000
-    assert!(stdout.contains("pc = 0") || stderr.contains("pc = 0") || stdout.contains("pc = 0x0"), "Expected initial PC 0");
+    assert!(
+        stdout.contains("pc = 0") || stderr.contains("pc = 0") || stdout.contains("pc = 0x0"),
+        "Expected initial PC 0"
+    );
     assert!(stdout.contains("pc = 0x00000004"), "Expected stepped PC 4");
 }
 
@@ -154,16 +167,23 @@ fn test_reverse_debugging() {
 
     // Use Unix Domain Socket
     let socket_path = std::env::temp_dir().join(format!("sp1_gdb_rev_{}.sock", std::process::id()));
-    if socket_path.exists() { std::fs::remove_file(&socket_path).unwrap(); }
+    if socket_path.exists() {
+        std::fs::remove_file(&socket_path).unwrap();
+    }
     let listener = UnixListener::bind(&socket_path).expect("Failed to bind socket");
     let listener_enum = DebuggerListener::Unix(listener);
-    
+
     thread::spawn(move || {
-        let mut executor = Executor::with_context(program, SP1CoreOpts::default(), SP1Context::builder().with_debugger(true).with_debugger_listener(listener_enum).build());
-        let _ = executor.run_fast(); 
+        let mut executor = Executor::with_context(
+            program,
+            SP1CoreOpts::default(),
+            SP1Context::builder().with_debugger(true).with_debugger_listener(listener_enum).build(),
+        );
+        let _ = executor.run_fast();
     });
 
-    let gdb_script_path = std::env::temp_dir().join(format!("sp1_gdb_rev_script_{}.gdb", std::process::id()));
+    let gdb_script_path =
+        std::env::temp_dir().join(format!("sp1_gdb_rev_script_{}.gdb", std::process::id()));
     let gdb_commands = format!(
         "target remote {}
          stepi
@@ -179,10 +199,7 @@ fn test_reverse_debugging() {
     std::fs::write(&gdb_script_path, gdb_commands).expect("Failed to write GDB script");
 
     let child = get_gdb_command()
-        .arg("--quiet")
-        .arg("--batch")
-        .arg("--nx")
-        .arg("--command")
+        .args(["--quiet", "--batch", "--nx", "--command"])
         .arg(&gdb_script_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -191,7 +208,6 @@ fn test_reverse_debugging() {
 
     let output = child.wait_with_output().expect("Failed to read stdout");
     let stdout = String::from_utf8_lossy(&output.stdout);
-
 
     assert!(stdout.contains("0xc"), "Expected PC 12 after 3 steps");
     // assert!(stdout.contains("0x8"), "Expected PC 8 after reverse-step");

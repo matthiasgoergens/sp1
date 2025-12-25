@@ -46,9 +46,8 @@ pub struct ExecutionState {
     pub input_stream: VecDeque<Vec<u8>>,
 
     /// A stream of proofs (reduce vk, proof, verifying key) inputted to the program.
-    pub proof_stream: std::sync::Arc<
+    pub proof_stream:
         Vec<(SP1ReduceProof<BabyBearPoseidon2>, StarkVerifyingKey<BabyBearPoseidon2>)>,
-    >,
 
     /// A ptr to the current position in the proof stream, incremented after verifying a proof.
     pub proof_stream_ptr: usize,
@@ -79,7 +78,7 @@ impl ExecutionState {
             input_stream: VecDeque::new(),
             public_values_stream: Vec::new(),
             public_values_stream_ptr: 0,
-            proof_stream: std::sync::Arc::new(Vec::new()),
+            proof_stream: Vec::new(),
             proof_stream_ptr: 0,
             syscall_counts: HashMap::new(),
         }

@@ -525,6 +525,12 @@ impl<'a> Executor<'a> {
         self.state.clk + *position as u32
     }
 
+    /// Get the shard size.
+    #[must_use]
+    pub fn shard_size(&self) -> u32 {
+        self.shard_size
+    }
+
     /// Get the current shard.
     #[must_use]
     #[inline]
