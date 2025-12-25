@@ -1099,7 +1099,6 @@ impl<'a> Executor<'a> {
     /// initialized.
     pub fn mw_cpu(&mut self, addr: u32, value: u32) {
         // Track the access for the debugger.
-        // Track the access for the debugger.
         if let Some(state) = &mut self.debugger_state {
             state.last_access_addr = Some(addr);
             state.last_access_type = Some(MemoryAccessType::Write);
