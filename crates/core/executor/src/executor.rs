@@ -16,6 +16,7 @@ use strum::IntoEnumIterator;
 use thiserror::Error;
 
 use crate::{
+    gdb,
     context::{IoOptions, SP1Context},
     dependencies::{
         emit_auipc_dependency, emit_branch_dependencies, emit_divrem_dependencies,
@@ -93,6 +94,8 @@ pub struct Executor<'a> {
 
     /// The mode the executor is running in.
     pub executor_mode: ExecutorMode,
+
+
 
     /// The memory accesses for the current cycle.
     pub memory_accesses: MemoryAccessRecord,
@@ -189,6 +192,21 @@ pub struct Executor<'a> {
 
     /// Temporary event counts for the current shard. This is a field to reuse memory.
     event_counts: EnumMap<RiscvAirId, u64>,
+
+    /// The debugger state.
+    pub(crate) debugger_state: Option<gdb::DebuggerState>,
+
+    /// The debugger configuration.
+    pub(crate) debugger: Option<crate::context::DebuggerConfig>,
+}
+
+/// The type of a memory access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryAccessType {
+    /// Read access.
+    Read,
+    /// Write access.
+    Write,
 }
 
 /// The different modes the executor can run in.
@@ -197,12 +215,24 @@ pub enum ExecutorMode {
     /// Run the execution with no tracing or checkpointing.
     #[default]
     Simple,
+    /// Run the execution in debugger mode with no tracing or checkpointing.
+    Debugger,
     /// Run the execution with checkpoints for memory.
     Checkpoint,
     /// Run the execution with full tracing of events.
     Trace,
     /// Run the execution with full tracing of events and size bounds for shape collection.
     ShapeCollection,
+}
+
+/// The direction of execution.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExecutionDirection {
+    /// Execute forward.
+    #[default]
+    Forward,
+    /// Execute backward.
+    Backward,
 }
 
 /// Information about event counts which are relevant for shape fixing.
@@ -250,6 +280,10 @@ pub enum ExecutionError {
     /// The program ended in unconstrained mode.
     #[error("program ended in unconstrained mode")]
     EndInUnconstrained(),
+
+    /// The debugger server encountered an error.
+    #[error("debugger error")]
+    DebuggerError(),
 
     /// The unconstrained cycle limit was exceeded.
     #[error("unconstrained cycle limit exceeded")]
@@ -340,6 +374,7 @@ impl<'a> Executor<'a> {
             unconstrained_state: Box::new(ForkState::default()),
             syscall_map,
             executor_mode: ExecutorMode::Trace,
+
             emit_global_memory_events: true,
             max_syscall_cycles,
             report: ExecutionReport::default(),
@@ -361,6 +396,8 @@ impl<'a> Executor<'a> {
             lde_size_threshold: 0,
             event_counts: EnumMap::default(),
             io_options: context.io_options,
+            debugger: context.debugger,
+            debugger_state: None,
         }
     }
 
@@ -976,6 +1013,12 @@ impl<'a> Executor<'a> {
     /// Read from memory, assuming that all addresses are aligned.
     #[inline]
     pub fn mr_cpu(&mut self, addr: u32) -> u32 {
+        // Track the access for the debugger.
+        if let Some(state) = &mut self.debugger_state {
+            state.last_access_addr = Some(addr);
+            state.last_access_type = Some(MemoryAccessType::Read);
+        }
+
         // Read the address from memory and create a memory read record.
         let record =
             self.mr(addr, self.shard(), self.timestamp(&MemoryAccessPosition::Memory), None);
@@ -1015,6 +1058,13 @@ impl<'a> Executor<'a> {
     /// This function will panic if the address is not aligned or if the memory accesses are already
     /// initialized.
     pub fn mw_cpu(&mut self, addr: u32, value: u32) {
+        // Track the access for the debugger.
+        // Track the access for the debugger.
+        if let Some(state) = &mut self.debugger_state {
+            state.last_access_addr = Some(addr);
+            state.last_access_type = Some(MemoryAccessType::Write);
+        }
+
         // Read the address from memory and create a memory read record.
         let record =
             self.mw(addr, value, self.shard(), self.timestamp(&MemoryAccessPosition::Memory), None);
@@ -1296,6 +1346,7 @@ impl<'a> Executor<'a> {
         let (b, c) = (self.rr_cpu(rs1, MemoryAccessPosition::B), imm);
         let addr = b.wrapping_add(c);
         let memory_value = self.mr_cpu(align(addr));
+
         (rd, b, c, addr, memory_value)
     }
 
@@ -1307,6 +1358,7 @@ impl<'a> Executor<'a> {
         let a = self.rr_cpu(rs1, MemoryAccessPosition::A);
         let addr = b.wrapping_add(c);
         let memory_value = self.word(align(addr));
+
         (a, b, c, addr, memory_value)
     }
 
@@ -1380,6 +1432,9 @@ impl<'a> Executor<'a> {
             self.rw_cpu(rd, a);
         } else if instruction.is_ecall_instruction() {
             (a, b, c, clk, next_pc, syscall, exit_code) = self.execute_ecall()?;
+            if let Some(state) = &mut self.debugger_state {
+                state.last_syscall = Some(syscall);
+            }
         } else if instruction.is_ebreak_instruction() {
             return Err(ExecutionError::Breakpoint());
         } else if instruction.is_unimp_instruction() {
@@ -1694,7 +1749,7 @@ impl<'a> Executor<'a> {
     /// Executes one cycle of the program, returning whether the program has finished.
     #[inline]
     #[allow(clippy::too_many_lines)]
-    fn execute_cycle(&mut self) -> Result<bool, ExecutionError> {
+    pub(crate) fn execute_cycle(&mut self) -> Result<bool, ExecutionError> {
         // Fetch the instruction at the current program counter.
         let instruction = self.fetch();
 
@@ -1965,6 +2020,29 @@ impl<'a> Executor<'a> {
     ///
     /// This function will return an error if the program execution fails.
     pub fn run_fast(&mut self) -> Result<(), ExecutionError> {
+        // Check if the debugger should be started.
+        let debugger_port = self.debugger.as_ref().map(|config| config.port).or_else(|| {
+            if std::env::var("SP1_DEBUGGER")
+                .map(|v| v.parse::<bool>().expect("SP1_DEBUGGER must be a boolean"))
+                .unwrap_or(false)
+            {
+                Some(
+                    std::env::var("SP1_DEBUGGER_PORT")
+                        .unwrap_or_else(|_| "9001".to_string())
+                        .parse::<u16>()
+                        .unwrap_or(9001),
+                )
+            } else {
+                None
+            }
+        });
+
+        if let Some(port) = debugger_port {
+            self.executor_mode = ExecutorMode::Debugger;
+            self.debugger_state = Some(gdb::DebuggerState::default());
+            return self.run_debugger(port);
+        }
+
         self.executor_mode = ExecutorMode::Simple;
         self.print_report = true;
         while !self.execute()? {}
@@ -2005,6 +2083,34 @@ impl<'a> Executor<'a> {
         #[cfg(feature = "profiling")]
         if let Some((profiler, writer)) = self.profiler.take() {
             profiler.write(writer).expect("Failed to write profile to output file");
+        }
+
+        Ok(())
+    }
+
+    /// Run the executor with a GDB server on the given port.
+    pub fn run_debugger(&mut self, port: u16) -> Result<(), ExecutionError> {
+        use crate::gdb::DebuggerEventLoop;
+
+        self.executor_mode = ExecutorMode::Trace;
+        self.print_report = true;
+
+        let sockaddr = format!("0.0.0.0:{port}");
+        let listener =
+            std::net::TcpListener::bind(&sockaddr).map_err(|_| ExecutionError::DebuggerError())?;
+        tracing::info!("Waiting for debugger connection on {}...", sockaddr);
+        let (stream, addr) = listener.accept().map_err(|_| ExecutionError::DebuggerError())?;
+        tracing::info!("Debugger client connected from {}", addr);
+
+        let debugger = gdbstub::stub::GdbStub::new(stream);
+        match debugger.run_blocking::<DebuggerEventLoop<'_>>(self) {
+            Ok(stop_reason) => {
+                tracing::info!("Debugger session ended with stop reason: {:?}", stop_reason);
+            }
+            Err(e) => {
+                tracing::error!("Debugger error: {:?}", e);
+                return Err(ExecutionError::DebuggerError());
+            }
         }
 
         Ok(())

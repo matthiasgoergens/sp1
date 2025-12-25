@@ -28,6 +28,8 @@ mod disassembler;
 pub mod estimator;
 pub mod events;
 mod executor;
+/// Implementation of the GDB stub for remote debugging.
+pub mod gdb;
 mod hook;
 mod instruction;
 mod io;
@@ -58,7 +60,7 @@ pub use report::*;
 pub use state::*;
 pub use utils::*;
 
-pub use sp1_stark::SP1ReduceProof;
+pub use sp1_stark::{SP1ReduceProof, SP1CoreOpts};
 
 /// Used for testing.
 #[cfg(test)]

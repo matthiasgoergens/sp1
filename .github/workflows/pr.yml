@@ -61,7 +61,15 @@ jobs:
           command: test
           args: --release --features native-gnark --workspace --exclude sp1-verifier
         env:
-          RUSTFLAGS: -Copt-level=3 -Cdebug-assertions -Coverflow-checks=y -Cdebuginfo=0
+          RUST_BACKTRACE: 1
+          SP1_DEV: 1
+
+      - name: Run debugger tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: -p sp1-core-executor --test debugger --features debugger-tests
+        env:
           RUST_BACKTRACE: 1
           SP1_DEV: 1
 

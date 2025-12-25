@@ -80,6 +80,7 @@ fn main() {
                 executor.state.global_clk as f64 / 1_000_000.0 / execution_duration.as_secs_f64()
             );
         }
+        ExecutorMode::Debugger => unimplemented!(),
         ExecutorMode::Checkpoint => {
             let (_, execution_duration) = time_operation(|| executor.run_checkpoint(true));
             println!("Checkpoint mode:");
