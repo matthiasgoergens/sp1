@@ -228,7 +228,11 @@ impl<'a> SP1ContextBuilder<'a> {
     /// specified by the `SP1_DEBUGGER_PORT` environment variable.
     pub fn with_debugger(&mut self, enable: bool) -> &mut Self {
         if enable {
-            self.debugger = Some(DebuggerConfig { port: Some(9001), socket: None, listener: None });
+            let port = std::env::var("SP1_DEBUGGER_PORT")
+                .ok()
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(9001);
+            self.debugger = Some(DebuggerConfig { port: Some(port), socket: None, listener: None });
         } else {
             self.debugger = None;
         }
@@ -237,9 +241,6 @@ impl<'a> SP1ContextBuilder<'a> {
 
     /// Set the debugger configuration with a custom port.
     pub fn with_debugger_port(&mut self, port: u16) -> &mut Self {
-        // If debugger not present, create new config or update existing?
-        // Builder usually allows incremental updates.
-        // Assuming we want to ENABLE debugger with this port.
         self.debugger = Some(DebuggerConfig { port: Some(port), socket: None, listener: None });
         self
     }
