@@ -68,7 +68,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: -p sp1-core-executor --test debugger --features debugger-tests
+          args: --package sp1-core-executor --test debugger --features debugger-tests
         env:
           RUST_BACKTRACE: 1
           SP1_DEV: 1
